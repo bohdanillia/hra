@@ -3,8 +3,9 @@
 #define ROWS 9
 #define COLS 12
 #define ENEMY_COUNT 10
+#define SAVE_FILE "save.txt"
 
-// # = wall, . = floor, X = exit. 
+/* # = wall, . = floor, X = exit. */
 const char map[ROWS][COLS + 1] = {
     "############",
     "#..........#",
@@ -22,6 +23,8 @@ struct Player {
     int hp, level, xp;
 };
 
+struct Player player = {1, 1, 100, 1, 0};
+
 struct Enemy {
     char symbol;
     const char *name;
@@ -30,7 +33,7 @@ struct Enemy {
     int defeated;
 };
 
-// Two enemies of each type = 10 battles, enough XP for level 5. 
+/* Two enemies of each type = 10 battles, enough XP for level 5. */
 struct Enemy enemies[ENEMY_COUNT] = {
     {'R', "Rat",      1, 3, 12,  5, 0, 0},
     {'R', "Rat",      2, 5, 12,  5, 0, 0},
@@ -66,11 +69,11 @@ int orcDefeated(void) {
     return enemies[8].defeated || enemies[9].defeated;
 }
 
-int questsComplete(struct Player player) {
+int questsComplete(void) {
     return defeatedCount() >= 3 && player.level >= 3 && orcDefeated();
 }
 
-void drawMap(struct Player player) {
+void drawMap(void) {
     putchar('\n');
     for (int row = 0; row < ROWS; row++) {
         for (int col = 0; col < COLS; col++) {
@@ -90,20 +93,20 @@ void drawMap(struct Player player) {
     puts("P=player, R/G/W/S/O=enemies, X=exit, #=wall");
 }
 
-void addExperience(struct Player *player) {
-    player->xp += 25;
-    if (player->level < 5 && player->xp >= player->level * 50) {
-        player->level++;
-        player->hp = 100 + (player->level - 1) * 20;
-        printf("LEVEL UP! You reached level %d. HP restored!\n", player->level);
+void addExperience(void) {
+    player.xp += 25;
+    if (player.level < 5 && player.xp >= player.level * 50) {
+        player.level++;
+        player.hp = 100 + (player.level - 1) * 20;
+        printf("LEVEL UP! You reached level %d. HP restored!\n", player.level);
     }
 }
 
-void fight(struct Player *player, struct Enemy *enemy) {
+void fight(struct Enemy *enemy) {
     printf("You meet a %s!\n", enemy->name);
-    while (player->hp > 0 && enemy->hp > 0) {
-        int attack = 12 + (player->level - 1) * 2;
-        int defense = 3 + (player->level - 1);
+    while (player.hp > 0 && enemy->hp > 0) {
+        int attack = 12 + (player.level - 1) * 2;
+        int defense = 3 + (player.level - 1);
         int damage = attack - enemy->defense;
         if (damage < 1) damage = 1;
         enemy->hp -= damage;
@@ -111,19 +114,19 @@ void fight(struct Player *player, struct Enemy *enemy) {
         if (enemy->hp <= 0) break;
         damage = enemy->attack - defense;
         if (damage < 1) damage = 1;
-        player->hp -= damage;
+        player.hp -= damage;
         printf("%s deals %d damage.\n", enemy->name, damage);
     }
-    if (player->hp > 0) {
+    if (player.hp > 0) {
         enemy->defeated = 1;
         printf("You defeated the %s! +25 XP\n", enemy->name);
-        addExperience(player);
+        addExperience();
     }
 }
 
-void movePlayer(struct Player *player, char command) {
-    int row = player->row;
-    int col = player->col;
+void movePlayer(char command) {
+    int row = player.row;
+    int col = player.col;
     if (command == 'w') row--;
     else if (command == 's') row++;
     else if (command == 'a') col--;
@@ -135,35 +138,101 @@ void movePlayer(struct Player *player, char command) {
         puts("There is a wall!");
         return;
     }
-    if (map[row][col] == 'X' && !questsComplete(*player)) {
+    if (map[row][col] == 'X' && !questsComplete()) {
         puts("Finish all 3 quests before escaping!");
         return;
     }
 
     int e = enemyAt(row, col);
-    if (e != -1) fight(player, &enemies[e]);
-    if (player->hp > 0) {
-        player->row = row;
-        player->col = col;
+    if (e != -1) fight(&enemies[e]);
+    if (player.hp > 0) {
+        player.row = row;
+        player.col = col;
     }
 }
 
+int saveGame(void) {
+    FILE *file = fopen(SAVE_FILE, "w");
+    if (file == NULL) return 0;
+
+    if (fprintf(file, "%d %d %d %d %d\n",
+                player.row, player.col, player.hp,
+                player.level, player.xp) < 0) {
+        fclose(file);
+        return 0;
+    }
+
+    for (int i = 0; i < ENEMY_COUNT; i++) {
+        if (fprintf(file, "%d ", enemies[i].defeated) < 0) {
+            fclose(file);
+            return 0;
+        }
+    }
+    return fclose(file) == 0;
+}
+
+int loadGame(void) {
+    FILE *file = fopen(SAVE_FILE, "r");
+    if (file == NULL) return 0;
+
+    struct Player loaded;
+    int flags[ENEMY_COUNT];
+    int ok = fscanf(file, "%d %d %d %d %d",
+                    &loaded.row, &loaded.col, &loaded.hp,
+                    &loaded.level, &loaded.xp) == 5;
+
+    for (int i = 0; i < ENEMY_COUNT && ok; i++) {
+        int numbersRead = fscanf(file, "%d", &flags[i]);
+        if (numbersRead != 1) {
+            ok = 0;
+            break;
+        }
+
+        if (flags[i] != 0 && flags[i] != 1) {
+            ok = 0;
+            break;
+        }
+    }
+
+    if (fclose(file) != 0) ok = 0;
+    if (!ok) return 0;
+
+    /* Keep the level, XP and defeated enemies consistent. */
+    int defeated = 0;
+    for (int i = 0; i < ENEMY_COUNT; i++) {
+        defeated += flags[i];
+    }
+
+    int expectedXp = defeated * 25;
+    int expectedLevel = expectedXp / 50 + 1;
+    if (expectedLevel > 5) expectedLevel = 5;
+    if (loaded.xp != expectedXp || loaded.level != expectedLevel) return 0;
+
+    player = loaded;
+    for (int i = 0; i < ENEMY_COUNT; i++) {
+        enemies[i].defeated = flags[i];
+    }
+
+    return 1;
+}
+
 int main(void) {
-    struct Player player = {1, 1, 100, 1, 0};
     char input[32];
     puts("DUNGEON ESCAPE");
-    puts("Move with w/a/s/d + Enter. q=quit.");
+    puts("Move with w/a/s/d + Enter. v=save, l=load, q=quit.");
 
     while (player.hp > 0) {
-        drawMap(player);
+        drawMap();
         printf("Command: ");
         if (fgets(input, sizeof(input), stdin) == NULL) break;
         char command = input[0];
         if (command == 'q') break;
-        movePlayer(&player, command);
+        if (command == 'v') puts(saveGame() ? "Saved!" : "Save failed!");
+        else if (command == 'l') puts(loadGame() ? "Loaded!" : "Load failed!");
+        else movePlayer(command);
 
         if (map[player.row][player.col] == 'X') {
-            drawMap(player);
+            drawMap();
             puts("YOU WIN! Dungeon escaped!");
             return 0;
         }
